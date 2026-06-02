@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TRI032S Live Viewer</title>
+  <style>
+    :root { --bg:#0f1115; --panel:#1a1d24; --line:#2a2f3a; --accent:#4f8cff; --txt:#e6e9ef; --muted:#8b93a3; --ok:#3ecf8e; --rec:#ff4d4f; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: "Segoe UI", system-ui, sans-serif; background:var(--bg); color:var(--txt); }
+    header { display:flex; align-items:center; gap:14px; padding:12px 20px; border-bottom:1px solid var(--line); }
+    header h1 { font-size:18px; margin:0; font-weight:600; }
+    .dot { width:10px; height:10px; border-radius:50%; background:var(--muted); display:inline-block; }
+    .dot.live { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+    .dot.sim  { background:#f0ad4e; box-shadow:0 0 8px #f0ad4e; }
+    #statusText { color:var(--muted); font-size:13px; }
+    main { display:flex; gap:18px; padding:18px 20px; flex-wrap:wrap; }
+    .video-wrap { flex:1 1 640px; min-width:320px; }
+    video { width:100%; background:#000; border-radius:10px; aspect-ratio:16/9; object-fit:contain; }
+    .meta { display:flex; gap:18px; margin-top:8px; color:var(--muted); font-size:13px; flex-wrap:wrap; }
+    aside { flex:0 0 320px; display:flex; flex-direction:column; gap:14px; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+    .card h2 { font-size:14px; margin:0 0 12px; font-weight:600; color:var(--txt); }
+    button { background:var(--accent); color:#fff; border:none; border-radius:7px; padding:9px 14px; font-size:13px; cursor:pointer; }
+    button:hover { filter:brightness(1.1); }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    button.secondary { background:#2a2f3a; }
+    button.rec { background:var(--rec); }
+    .row { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
+    label { font-size:13px; color:var(--muted); display:flex; align-items:center; gap:8px; }
+    input[type=range] { flex:1; }
+    input[type=number] { width:90px; background:#0f1115; border:1px solid var(--line); color:var(--txt); border-radius:5px; padding:5px; }
+    .setting { margin-bottom:14px; }
+    .setting .label-line { display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px; }
+    .setting .val { color:var(--accent); }
+    .recordings { list-style:none; padding:0; margin:0; max-height:200px; overflow:auto; }
+    .recordings li { display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid var(--line); font-size:12px; }
+    .recordings a { color:var(--accent); text-decoration:none; }
+    .recIndicator { color:var(--rec); font-weight:600; display:none; }
+    .recIndicator.on { display:inline; }
+    .hint { font-size:12px; color:var(--muted); margin-top:6px; line-height:1.5; }
+    .disabledNote { font-size:12px; color:#f0ad4e; }
+  </style>
+</head>
+<body>
+  <header>
+    <span id="dot" class="dot"></span>
+    <h1>TRI032S Live Viewer</h1>
+    <span id="statusText">연결 중…</span>
+    <span id="recIndicator" class="recIndicator">● REC</span>
+  </header>
+
+  <main>
+    <div class="video-wrap">
+      <video id="video" autoplay playsinline muted></video>
+      <div class="meta">
+        <span id="metaMode">mode: —</span>
+        <span id="metaRes">resolution: —</span>
+        <span id="metaFps">fps: —</span>
+        <span id="metaViewers">viewers: —</span>
+      </div>
+    </div>
+
+    <aside>
+      <div class="card">
+        <h2>스트림</h2>
+        <div class="row">
+          <button id="btnConnect" class="secondary">재연결</button>
+          <button id="btnSnapshot">스냅샷 저장</button>
+        </div>
+        <p class="hint">화면은 WebRTC(H.264)로 저지연 전송됩니다. 스냅샷은 원본 해상도로 저장됩니다.</p>
+      </div>
+
+      <div class="card">
+        <h2>녹화</h2>
+        <div class="row">
+          <button id="btnRecStart" class="rec">● 녹화 시작</button>
+          <button id="btnRecStop" class="secondary" disabled>■ 정지</button>
+        </div>
+        <ul id="recordings" class="recordings"></ul>
+        <p class="hint">녹화는 원본 해상도 mp4로 서버의 recordings 폴더에 저장됩니다.</p>
+      </div>
+
+      <div class="card">
+        <h2>카메라 설정</h2>
+        <div id="settings"><p class="disabledNote" id="settingsNote">설정을 불러오는 중…</p></div>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let pc = null;
+
+    // ---------- WebRTC ----------
+    async function connect() {
+      if (pc) { pc.close(); pc = null; }
+      pc = new RTCPeerConnection();
+      pc.addTransceiver("video", { direction: "recvonly" });
+      pc.ontrack = (e) => { $("video").srcObject = e.streams[0]; };
+      pc.onconnectionstatechange = () => {
+        if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
+          $("statusText").textContent = "연결 끊김 — 재연결을 눌러주세요";
+        }
+      };
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      const res = await fetch("/api/offer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
+      });
+      const answer = await res.json();
+      await pc.setRemoteDescription(answer);
+    }
+
+    // ---------- status polling ----------
+    async function pollStatus() {
+      try {
+        const s = await (await fetch("/api/status")).json();
+        const dot = $("dot");
+        dot.className = "dot " + (s.mode === "camera" ? "live" : s.mode === "simulation" ? "sim" : "");
+        $("statusText").textContent =
+          s.mode === "camera" ? `LIVE · ${s.model || "camera"}` :
+          s.mode === "simulation" ? "시뮬레이션 (카메라 미연결)" : "카메라 오류";
+        $("metaMode").textContent = "mode: " + s.mode;
+        $("metaRes").textContent = `resolution: ${s.width}×${s.height}`;
+        $("metaFps").textContent = "fps: " + s.fps;
+        $("metaViewers").textContent = "viewers: " + s.viewers;
+        $("recIndicator").className = "recIndicator" + (s.recording ? " on" : "");
+        $("btnRecStart").disabled = s.recording;
+        $("btnRecStop").disabled = !s.recording;
+      } catch (e) { /* ignore transient */ }
+    }
+
+    // ---------- settings ----------
+    let settingsRendered = false;
+    async function loadSettings() {
+      const note = $("settingsNote");
+      const s = await (await fetch("/api/settings")).json();
+      if (!s || Object.keys(s).length === 0) {
+        $("settings").innerHTML = '<p class="disabledNote">시뮬레이션 모드에서는 카메라 설정을 사용할 수 없습니다. 카메라를 연결하세요.</p>';
+        settingsRendered = false;
+        return;
+      }
+      if (settingsRendered) { syncSettingValues(s); return; }
+      const c = $("settings");
+      c.innerHTML = "";
+      addToggle(c, "exposure_auto", "자동 노출", s.exposure_auto);
+      if (s.exposure_time) addSlider(c, "exposure_time", "노출 시간 (µs)", s.exposure_time);
+      addToggle(c, "gain_auto", "자동 게인", s.gain_auto);
+      if (s.gain) addSlider(c, "gain", "게인 (dB)", s.gain);
+      if (s.frame_rate) addSlider(c, "frame_rate", "프레임레이트 (fps)", s.frame_rate);
+      settingsRendered = true;
+    }
+
+    function syncSettingValues(s) {
+      for (const key of Object.keys(s)) {
+        const el = document.querySelector(`[data-key="${key}"]`);
+        if (!el) continue;
+        if (el.type === "checkbox") el.checked = s[key].value;
+        else if (document.activeElement !== el) {
+          el.value = s[key].value;
+          const out = document.querySelector(`[data-val="${key}"]`);
+          if (out) out.textContent = s[key].value;
+        }
+      }
+    }
+
+    function addToggle(parent, key, label, node) {
+      if (!node) return;
+      const wrap = document.createElement("div");
+      wrap.className = "setting";
+      wrap.innerHTML = `<label><input type="checkbox" data-key="${key}" ${node.value ? "checked" : ""}/> ${label}</label>`;
+      parent.appendChild(wrap);
+      wrap.querySelector("input").addEventListener("change", (e) => postSetting(key, e.target.checked));
+    }
+
+    function addSlider(parent, key, label, node) {
+      const wrap = document.createElement("div");
+      wrap.className = "setting";
+      const step = (node.max - node.min) > 1000 ? 1 : 0.1;
+      wrap.innerHTML =
+        `<div class="label-line"><span>${label}</span><span class="val" data-val="${key}">${node.value}</span></div>
+         <input type="range" data-key="${key}" min="${node.min}" max="${node.max}" step="${step}" value="${node.value}" />`;
+      parent.appendChild(wrap);
+      const input = wrap.querySelector("input");
+      input.addEventListener("input", (e) => { wrap.querySelector(".val").textContent = e.target.value; });
+      input.addEventListener("change", (e) => postSetting(key, parseFloat(e.target.value)));
+    }
+
+    async function postSetting(name, value) {
+      try {
+        const res = await fetch("/api/settings", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, value }),
+        });
+        if (!res.ok) console.warn("setting failed", name, await res.text());
+      } catch (e) { console.warn(e); }
+    }
+
+    // ---------- recordings ----------
+    async function loadRecordings() {
+      const list = await (await fetch("/api/recordings")).json();
+      const ul = $("recordings");
+      ul.innerHTML = "";
+      for (const r of list) {
+        const li = document.createElement("li");
+        const mb = (r.size / 1048576).toFixed(1);
+        li.innerHTML = `<a href="/api/recordings/${encodeURIComponent(r.name)}" download>${r.name}</a><span>${mb} MB</span>`;
+        ul.appendChild(li);
+      }
+      if (list.length === 0) ul.innerHTML = '<li style="color:var(--muted);border:none;">아직 녹화 파일이 없습니다.</li>';
+    }
+
+    // ---------- buttons ----------
+    $("btnConnect").addEventListener("click", connect);
+    $("btnSnapshot").addEventListener("click", () => {
+      const a = document.createElement("a");
+      a.href = "/api/snapshot?t=" + Date.now();
+      a.download = "snapshot_" + Date.now() + ".jpg";
+      document.body.appendChild(a); a.click(); a.remove();
+    });
+    $("btnRecStart").addEventListener("click", async () => {
+      const res = await fetch("/api/recording/start", { method: "POST" });
+      if (!res.ok) alert("녹화 시작 실패: " + (await res.text()));
+      pollStatus();
+    });
+    $("btnRecStop").addEventListener("click", async () => {
+      const res = await fetch("/api/recording/stop", { method: "POST" });
+      if (res.ok) setTimeout(loadRecordings, 500);
+      pollStatus();
+    });
+
+    // ---------- boot ----------
+    connect().catch((e) => { $("statusText").textContent = "연결 실패: " + e; });
+    pollStatus();
+    loadSettings();
+    loadRecordings();
+    setInterval(pollStatus, 1500);
+    setInterval(loadSettings, 3000);
+  </script>
+</body>
+</html>

@@ -18,6 +18,11 @@ ENV/
 # Environment / secrets
 .env
 *.env
+CAM_INFO*
+
+# Runtime artifacts
+persist.json
+recordings/*.mp4
 
 # IDE
 .vscode/

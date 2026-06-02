@@ -1,0 +1,10 @@
+# Web viewer dependencies (install into the project venv).
+# arena_api is NOT here: it ships with the Arena SDK MP and is installed from
+# the bundled wheel (see README.md) -> it is not on PyPI.
+
+fastapi>=0.110
+uvicorn[standard]>=0.29
+aiortc>=1.9
+av>=12
+opencv-python>=4.8
+numpy>=1.24
