@@ -40,6 +40,12 @@ ACQUISITION_FRAME_RATE: float | None = 30.0
 # get_buffer timeout in milliseconds.
 GRAB_TIMEOUT_MS = 2000
 
+# Auto-reconnect: after this many consecutive grab failures the camera is
+# closed and reopened (handles a yanked cable / power blip on an always-on
+# server). Reconnect retries use exponential backoff capped at the max below.
+RECONNECT_AFTER_FAILURES = 3
+RECONNECT_BACKOFF_MAX_S = 10.0
+
 # --- Streaming (WebRTC) -----------------------------------------------------
 # Frames wider than this are downscaled before H.264 encoding (lower latency,
 # less CPU/bandwidth). Snapshot and recording always use full resolution.

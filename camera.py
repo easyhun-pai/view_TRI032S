@@ -157,12 +157,23 @@ class CameraManager:
         last = time.time()
         settings_refresh_at = 0.0
         sim_t = 0
+        fail_count = 0
         while not self._stop.is_set():
             if self.mode == "camera":
                 self._apply_pending()
                 frame = self._grab_real()
                 if frame is None:
+                    fail_count += 1
+                    if fail_count == 1:
+                        log.warning("Frame grab failing; reconnecting after %d "
+                                    "consecutive failures", config.RECONNECT_AFTER_FAILURES)
+                    if fail_count >= config.RECONNECT_AFTER_FAILURES:
+                        self._reconnect()
+                        fail_count = 0
                     continue
+                if fail_count:
+                    log.info("Camera recovered after %d failure(s)", fail_count)
+                    fail_count = 0
                 now = time.time()
                 if now - settings_refresh_at > 1.0:
                     self._refresh_settings()
@@ -321,8 +332,10 @@ class CameraManager:
     def _grab_real(self) -> np.ndarray | None:
         try:
             buffer = self._device.get_buffer(timeout=config.GRAB_TIMEOUT_MS)
-        except Exception:
-            log.exception("get_buffer failed")
+        except Exception as exc:
+            # Quiet by design: the grab loop counts failures and reconnects;
+            # logging a full traceback every timeout would flood the log.
+            log.debug("get_buffer failed: %s", exc)
             return None
         try:
             item = self._BufferFactory.copy(buffer)
@@ -444,6 +457,26 @@ class CameraManager:
         cv2.putText(frame, f"frame {t}", (30, 110),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2, cv2.LINE_AA)
         return frame
+
+    # -- reconnect ----------------------------------------------------------
+    def _reconnect(self) -> None:
+        """Close and reopen the device, retrying with backoff until it comes
+        back (or the manager is stopped). The last frame stays on screen
+        meanwhile, so viewers see a freeze rather than a crash."""
+        log.warning("Camera lost - attempting to reconnect...")
+        self._close_device()
+        backoff = 1.0
+        while not self._stop.is_set():
+            try:
+                if self._open_device():
+                    self._refresh_settings()
+                    log.info("Camera reconnected: %s (%dx%d)", self.model, self.width, self.height)
+                    return
+            except Exception:
+                log.exception("Reconnect attempt failed")
+            # responsive sleep: wakes immediately if the server is shutting down
+            self._stop.wait(backoff)
+            backoff = min(backoff * 2, config.RECONNECT_BACKOFF_MAX_S)
 
     # -- teardown -----------------------------------------------------------
     def _close_device(self) -> None:
